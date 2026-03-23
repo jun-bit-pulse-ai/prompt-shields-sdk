@@ -1,0 +1,27 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: prompt_shields
+      POSTGRES_USER: ps_user
+      POSTGRES_PASSWORD: ps_local_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql
+
+  collector:
+    build:
+      context: .
+      dockerfile: packages/collector/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      PS_DATABASE_URL: postgresql+asyncpg://ps_user:ps_local_dev@db:5432/prompt_shields
+    depends_on:
+      - db
+
+volumes:
+  pgdata:
