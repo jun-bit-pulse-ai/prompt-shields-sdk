@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Request
 from collector.auth import resolve_tenant
 from collector.dedup import find_or_create_asset
+from collector.embeddings import get_embedding, build_asset_text
 from db.models import AIUsageEvent
 
 router = APIRouter()
@@ -54,6 +55,19 @@ async def ingest_events(body: IngestRequest, request: Request):
         if is_new:
             assets_created += 1
             await db.flush()
+
+        # Generate embedding for new assets (async, fail-open)
+        if is_new and asset.embedding is None:
+            asset_text = build_asset_text(
+                vendor=event.vendor,
+                model=event.model,
+                use_case_name=event.use_case_name,
+                business_unit=event.business_unit,
+                data_classification=event.data_classification,
+            )
+            embedding = await get_embedding(asset_text)
+            if embedding:
+                asset.embedding = embedding
 
         prompt_hash = None
         if event.prompt_text:

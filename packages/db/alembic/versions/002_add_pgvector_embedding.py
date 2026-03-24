@@ -1,0 +1,37 @@
+"""Add pgvector embedding column to ai_assets
+
+Revision ID: 002
+Revises: 001
+Create Date: 2026-03-24
+"""
+from typing import Sequence, Union
+from alembic import op
+import sqlalchemy as sa
+from pgvector.sqlalchemy import Vector
+
+revision: str = '002'
+down_revision: Union[str, None] = '001'
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    # Enable pgvector extension
+    op.execute('CREATE EXTENSION IF NOT EXISTS vector')
+
+    # Add embedding column
+    op.add_column('ai_assets', sa.Column('embedding', Vector(1536)))
+
+    # Add IVFFlat index for cosine similarity search
+    op.create_index(
+        'ix_ai_assets_embedding',
+        'ai_assets',
+        ['embedding'],
+        postgresql_using='ivfflat',
+        postgresql_ops={'embedding': 'vector_cosine_ops'},
+    )
+
+
+def downgrade() -> None:
+    op.drop_index('ix_ai_assets_embedding')
+    op.drop_column('ai_assets', 'embedding')

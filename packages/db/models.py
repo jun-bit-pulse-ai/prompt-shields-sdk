@@ -5,6 +5,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
+from pgvector.sqlalchemy import Vector
 
 
 def uuid7():
@@ -48,6 +49,8 @@ class AIAsset(Base):
     discovery_source = Column(ARRAY(Text), nullable=False)
     confidence = Column(Text, default="low")
     calling_service = Column(Text)
+    # pgvector embedding for semantic search (1536 dims = OpenAI text-embedding-3-small)
+    embedding = Column(Vector(1536))
     first_seen = Column(TIMESTAMP(timezone=True), nullable=False, default=utcnow)
     last_seen = Column(TIMESTAMP(timezone=True), nullable=False, default=utcnow)
     created_at = Column(TIMESTAMP(timezone=True), default=utcnow)
@@ -64,6 +67,8 @@ class AIAsset(Base):
         Index("ix_ai_assets_tenant_vendor_model", "tenant_id", "vendor", "model"),
         Index("ix_ai_assets_tenant_status", "tenant_id", "status"),
         Index("ix_ai_assets_discovery_source", "discovery_source", postgresql_using="gin"),
+        Index("ix_ai_assets_embedding", "embedding", postgresql_using="ivfflat",
+              postgresql_ops={"embedding": "vector_cosine_ops"}),
     )
 
 

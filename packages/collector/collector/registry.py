@@ -3,6 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Request, Query, HTTPException
 from sqlalchemy import select, func, and_
 from collector.auth import resolve_tenant
+from collector.embeddings import get_embedding, build_asset_text, mock_embedding
 from db.models import AIAsset, DataFlow, RiskMapping
 
 router = APIRouter(prefix="/api/v1/registry")
@@ -109,6 +110,52 @@ async def list_models(request: Request):
     result = await db.execute(stmt)
     models = [row[0] for row in result.all()]
     return {"data": models}
+
+
+@router.get("/search")
+async def semantic_search(
+    request: Request,
+    q: str = Query(..., description="Natural language search query"),
+    limit: int = Query(default=10, le=50),
+    use_mock: bool = Query(default=False, description="Use mock embeddings for testing"),
+):
+    """Semantic search over AI assets using pgvector cosine similarity."""
+    tenant_id = await resolve_tenant(request)
+    db = request.state.db
+
+    # Generate embedding for query
+    if use_mock:
+        query_embedding = mock_embedding(q)
+    else:
+        query_embedding = await get_embedding(q)
+        if query_embedding is None:
+            # Fallback to mock if no API key
+            query_embedding = mock_embedding(q)
+
+    # Cosine similarity search using pgvector
+    stmt = (
+        select(AIAsset)
+        .where(
+            AIAsset.tenant_id == tenant_id,
+            AIAsset.embedding.is_not(None),
+        )
+        .order_by(AIAsset.embedding.cosine_distance(query_embedding))
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    assets = result.scalars().all()
+
+    data = []
+    for a in assets:
+        serialized = _serialize_asset(a)
+        # Add similarity score
+        if a.embedding is not None:
+            serialized["similarity"] = round(1.0 - float(
+                sum((x - y) ** 2 for x, y in zip(a.embedding, query_embedding)) ** 0.5
+            ), 4)
+        data.append(serialized)
+
+    return {"data": data, "meta": {"total": len(data), "query": q}}
 
 
 def _serialize_asset(a: AIAsset) -> dict:

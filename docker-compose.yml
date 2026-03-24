@@ -1,7 +1,7 @@
 version: "3.9"
 services:
   db:
-    image: postgres:15
+    image: pgvector/pgvector:pg15
     environment:
       POSTGRES_DB: prompt_shields
       POSTGRES_USER: ps_user
