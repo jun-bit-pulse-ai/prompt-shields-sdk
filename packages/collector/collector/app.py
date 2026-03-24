@@ -30,3 +30,7 @@ async def list_assets(request: Request):
     from collector.auth import resolve_tenant
     tenant_id = await resolve_tenant(request)
     return {"data": [], "meta": {"total": 0, "has_more": False, "next_cursor": None}}
+
+
+from collector.ingest import router as ingest_router
+app.include_router(ingest_router)
