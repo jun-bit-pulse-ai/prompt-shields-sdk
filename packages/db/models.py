@@ -67,7 +67,7 @@ class AIAsset(Base):
         Index("ix_ai_assets_tenant_vendor_model", "tenant_id", "vendor", "model"),
         Index("ix_ai_assets_tenant_status", "tenant_id", "status"),
         Index("ix_ai_assets_discovery_source", "discovery_source", postgresql_using="gin"),
-        Index("ix_ai_assets_embedding", "embedding", postgresql_using="ivfflat",
+        Index("ix_ai_assets_embedding", "embedding", postgresql_using="hnsw",
               postgresql_ops={"embedding": "vector_cosine_ops"}),
     )
 

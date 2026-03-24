@@ -15,6 +15,9 @@ async def resolve_tenant(request: Request) -> UUID:
         )
     api_key = auth.removeprefix("Bearer ").strip()
 
+    # SECURITY TODO: Phase 1 uses plaintext key lookup for demo convenience.
+    # Phase 2 MUST switch to bcrypt hash comparison (bcrypt is already in deps).
+    # Never deploy plaintext key lookup to production or pilot environments.
     db = request.state.db
     stmt = select(Tenant).where(Tenant.settings["api_key"].astext == api_key)
     result = await db.execute(stmt)

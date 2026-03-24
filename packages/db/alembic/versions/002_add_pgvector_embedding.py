@@ -22,12 +22,12 @@ def upgrade() -> None:
     # Add embedding column
     op.add_column('ai_assets', sa.Column('embedding', Vector(1536)))
 
-    # Add IVFFlat index for cosine similarity search
+    # Add HNSW index for cosine similarity search (works on empty tables, unlike IVFFlat)
     op.create_index(
         'ix_ai_assets_embedding',
         'ai_assets',
         ['embedding'],
-        postgresql_using='ivfflat',
+        postgresql_using='hnsw',
         postgresql_ops={'embedding': 'vector_cosine_ops'},
     )
 
