@@ -1,0 +1,36 @@
+{
+  "name": "Prompt Shields AI Asset Registry",
+  "description": "Import AI assets discovered by Prompt Shields into Ardoq AI Lens",
+  "source": {
+    "type": "rest",
+    "url": "{{PS_COLLECTOR_URL}}/api/v1/registry/assets?limit=200",
+    "method": "GET",
+    "headers": {
+      "Authorization": "Bearer {{PS_API_KEY}}"
+    },
+    "pagination": {
+      "type": "cursor",
+      "cursor_path": "meta.next_cursor",
+      "cursor_param": "after"
+    },
+    "data_path": "data"
+  },
+  "mapping": {
+    "component_type": "AI Use Case",
+    "fields": {
+      "name": "{{use_case_name}} ({{vendor}}/{{model}})",
+      "vendor": "{{vendor}}",
+      "model": "{{model}}",
+      "business_unit": "{{business_unit}}",
+      "owner": "{{owner_email}}",
+      "environment": "{{environment}}",
+      "data_classification": "{{data_classification}}",
+      "discovery_confidence": "{{confidence}}",
+      "discovery_sources": "{{discovery_source}}",
+      "first_seen": "{{first_seen}}",
+      "last_seen": "{{last_seen}}"
+    }
+  },
+  "schedule": "every 4 hours",
+  "notes": "Configure PS_COLLECTOR_URL and PS_API_KEY as Integration Builder variables."
+}
