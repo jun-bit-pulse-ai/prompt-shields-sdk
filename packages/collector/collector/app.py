@@ -24,13 +24,7 @@ async def db_session_middleware(request: Request, call_next):
         return response
 
 
-# Placeholder route — will be replaced by registry.py in Task 5
-@app.get("/api/v1/registry/assets")
-async def list_assets(request: Request):
-    from collector.auth import resolve_tenant
-    tenant_id = await resolve_tenant(request)
-    return {"data": [], "meta": {"total": 0, "has_more": False, "next_cursor": None}}
-
-
 from collector.ingest import router as ingest_router
+from collector.registry import router as registry_router
 app.include_router(ingest_router)
+app.include_router(registry_router)
