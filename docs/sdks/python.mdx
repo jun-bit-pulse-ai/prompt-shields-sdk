@@ -1,115 +1,232 @@
 ---
 title: Python SDK
-description: Python client for the Prompt Shields Partner API
+description: Drop-in OpenAI / Anthropic wrapper for AI discovery and observability
 ---
 
 # Python SDK
 
+The Prompt Shields Python SDK is a drop-in replacement for the OpenAI and Anthropic clients. Every LLM call is wrapped with structured telemetry — fail-open, so a collector outage never blocks a model call.
+
+<Info>
+  For a deep-dive walkthrough with debugging tips and production patterns,
+  see the standalone [SDK Developer Guide](https://github.com/jun-bit-pulse-ai/prompt-shields-sdk/blob/main/SDK_GUIDE.md).
+</Info>
+
 ## Installation
 
 ```bash
-pip install prompt-shields-partner
+# OpenAI only
+pip install "prompt-shields[openai]"
+
+# Anthropic only
+pip install "prompt-shields[anthropic]"
+
+# Both providers
+pip install "prompt-shields[all]"
 ```
+
+Requires Python 3.11+.
 
 ## Quick Start
 
-```python
-from prompt_shields_partner import PartnerClient
+<Tabs>
+  <Tab title="OpenAI">
+    ```python
+    from prompt_shields import ShieldsOpenAI
 
-client = PartnerClient(
-    client_id="ps-partner-ardoq-abc123",
-    client_secret="sk-partner-secret-xyz789",
-    # Or use API key:
-    # api_key="ps-pk-your-key-here",
+    client = ShieldsOpenAI(
+        api_key="sk-...",
+        ps_api_key="ps-...",
+        ps_collector_url="https://collector.promptshields.io",
+        business_unit="HR",
+        use_case="interview-screening",
+        owner="jane.doe@acme.com",
+        data_classification="confidential",
+        environment="production",
+    )
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Summarize this candidate..."}],
+    )
+    ```
+  </Tab>
+  <Tab title="Anthropic">
+    ```python
+    from prompt_shields import ShieldsAnthropic
+
+    client = ShieldsAnthropic(
+        api_key="sk-ant-...",
+        ps_api_key="ps-...",
+        business_unit="Legal",
+        use_case="contract-review",
+    )
+
+    response = client.chat.completions.create(
+        model="claude-sonnet-4-20250514",
+        messages=[{"role": "user", "content": "Review this NDA..."}],
+        max_tokens=2048,
+    )
+    ```
+  </Tab>
+  <Tab title="Async (FastAPI)">
+    ```python
+    from prompt_shields import AsyncShieldsOpenAI
+
+    client = AsyncShieldsOpenAI(
+        api_key="sk-...",
+        ps_api_key="ps-...",
+        business_unit="HR",
+        use_case="screening",
+    )
+
+    response = await client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "..."}],
+    )
+    ```
+  </Tab>
+</Tabs>
+
+## What's Captured
+
+<CardGroup cols={2}>
+  <Card title="Vendor + Model" icon="microchip">
+    Auto-detected from the call site
+  </Card>
+  <Card title="Tokens + Cost" icon="dollar-sign">
+    From the provider response; cost calculated locally
+  </Card>
+  <Card title="Latency" icon="gauge-high">
+    Measured at the SDK boundary
+  </Card>
+  <Card title="Tool calls" icon="screwdriver-wrench">
+    OpenAI `tool_calls` and Anthropic `tool_use` blocks
+  </Card>
+  <Card title="PII categories" icon="user-shield">
+    Local pattern scan — categories only, never content
+  </Card>
+  <Card title="Business context" icon="building">
+    BU, use case, owner, environment, data classification
+  </Card>
+</CardGroup>
+
+## Per-Request Metadata
+
+For data that varies per call, use `ps_metadata`:
+
+```python
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Review this candidate file..."}],
+    ps_metadata={
+        "data_sources": ["candidates_db", "linkedin_api"],
+        "output_destination": "hiring_dashboard",
+        "risk_tags": ["pii", "gdpr"],
+        "session_id": "review-2025-04-12-001",
+        "user_id": "hr_user_42",
+    },
 )
-
-# List all assets
-assets = client.assets.list(business_unit="HR", confidence="high")
-for asset in assets:
-    print(f"{asset.vendor}/{asset.model} - {asset.use_case_name}")
-
-# Get changes since last sync
-changes = client.changes.list(since="2026-03-25T10:00:00Z")
-for change in changes:
-    print(f"{change.change_type}: {change.asset.use_case_name}")
 ```
 
-## Authentication
+| Field | Purpose |
+|-------|---------|
+| `data_sources` | Systems feeding data into the prompt — populates data flow lineage |
+| `output_destination` | Where AI output goes — completes the lineage graph |
+| `risk_tags` | Free-form tags for governance filtering (`gdpr`, `hipaa`, ...) |
+| `session_id` | Groups related calls in a multi-turn conversation |
+| `user_id` | Opaque identifier (hash before passing if you need to anonymize) |
 
-The SDK handles OAuth token management automatically:
+## Configuration Reference
+
+| Argument | Type | Default | Notes |
+|----------|------|---------|-------|
+| `api_key` | str | — | LLM provider key. Never sent — only a SHA-256 fingerprint. |
+| `ps_api_key` | str | — | Prompt Shields tenant key. |
+| `vendor` | str | `"openai"` | Or `"anthropic"`. Set by typed subclasses. |
+| `ps_collector_url` | str | `http://localhost:8000` | Set to your production collector URL. |
+| `business_unit` | str | — | Becomes part of the asset merge key. |
+| `use_case` | str | — | Maps to `use_case_name` in the registry. |
+| `owner` | str | — | Maps to `owner_email`. |
+| `data_classification` | str | — | `public` / `internal` / `confidential` / `restricted`. |
+| `environment` | str | — | Separate envs are separate assets. |
+| `calling_service` | str | — | Service/app name for dedup fallback. |
+| `scan_pii` | bool | `True` | Disable to skip local PII detection. |
+| `send_prompt_text` | bool | `False` | Opt-in to log full prompt content. |
+| `pricing_table` | dict | built-in | Override token-to-USD pricing. |
+
+## Privacy Model
+
+| Field | Sent by default? |
+|-------|------------------|
+| Vendor + model | Yes |
+| Token counts, latency, cost | Yes |
+| Tool call names | Yes |
+| PII category labels | Yes |
+| API key fingerprint | Yes (SHA-256, truncated) |
+| Business metadata | Yes (only what you pass) |
+| **Prompt content** | **No** (unless `send_prompt_text=True`) |
+| **Response content** | **Never** |
+| **Raw API key** | **Never** |
+| **Tool call arguments** | **Never** |
+
+## PII Detection
+
+The SDK runs a local pattern-based scanner before sending telemetry:
 
 ```python
-# OAuth (recommended) — tokens are cached and auto-refreshed
-client = PartnerClient(
-    client_id="ps-partner-ardoq-abc123",
-    client_secret="sk-partner-secret-xyz789",
+from prompt_shields import detect_pii_categories
+
+detect_pii_categories("Email jane@acme.com about SSN 123-45-6789")
+# → ['email', 'ssn']
+```
+
+Detected categories: `email`, `phone`, `ssn`, `credit_card`, `ip_address`, `iban`, `health_data`, `financial_data`.
+
+## Cost Estimation
+
+Built-in pricing table for OpenAI, Anthropic, and Google models:
+
+```python
+from prompt_shields import estimate_cost
+
+estimate_cost("openai", "gpt-4o", tokens_in=1000, tokens_out=2000)
+# → 0.0225 (USD)
+```
+
+Override with a custom table:
+
+```python
+client = ShieldsOpenAI(
+    api_key="sk-...",
+    ps_api_key="ps-...",
+    pricing_table={
+        ("openai", "gpt-4o"): (0.0020, 0.0080),  # negotiated rate
+        ("custom", "internal-llm-v1"): (0.0001, 0.0002),
+    },
 )
-
-# API key fallback
-client = PartnerClient(
-    api_key="ps-pk-your-key-here",
-)
-
-# Custom base URL (sandbox)
-client = PartnerClient(
-    client_id="...",
-    client_secret="...",
-    base_url="https://sandbox.api.promptshields.io",
-)
 ```
 
-## Pagination
+## Fail-Open Guarantees
 
-The SDK auto-paginates. Use `list()` to iterate all results or `list_page()` for manual control:
+1. **LLM calls never blocked by telemetry** — response returned before telemetry sent
+2. **No prompt content leaves the host** unless explicitly opted in
+3. **Telemetry errors never raise** — logged at WARN, buffered for retry
+4. **Buffer overflow drops oldest events** — never blocks the app
 
-```python
-# Auto-pagination (iterates all pages)
-all_assets = list(client.assets.list(limit=200))
+## Next Steps
 
-# Manual pagination
-page = client.assets.list_page(limit=50)
-while page.meta.has_more:
-    for asset in page.data:
-        process(asset)
-    page = client.assets.list_page(limit=50, after=page.meta.next_cursor)
-```
-
-## Full Sync Example
-
-```python
-from prompt_shields_partner import PartnerClient
-
-client = PartnerClient(api_key="ps-pk-your-key-here")
-
-# Initial full export
-export = client.export.get()
-sync_token = export.meta.sync_token
-print(f"Exported {export.meta.total} assets")
-
-# Save sync_token for next run...
-
-# Delta sync (next run)
-changes = list(client.changes.list(since=sync_token))
-for change in changes:
-    if change.change_type == "created":
-        create_in_ea_tool(change.asset)
-    elif change.change_type == "updated":
-        update_in_ea_tool(change.asset, change.changed_fields)
-    elif change.change_type == "deactivated":
-        deactivate_in_ea_tool(change.asset)
-```
-
-## Error Handling
-
-```python
-from prompt_shields_partner import PartnerClient, APIError, RateLimitError
-
-client = PartnerClient(api_key="ps-pk-your-key-here")
-
-try:
-    asset = client.assets.get("019e1a2b-...")
-except RateLimitError as e:
-    print(f"Rate limited. Retry after {e.retry_after} seconds")
-except APIError as e:
-    print(f"API error {e.status}: {e.title} - {e.detail}")
-```
+<CardGroup cols={2}>
+  <Card title="Developer Guide" icon="book" href="https://github.com/jun-bit-pulse-ai/prompt-shields-sdk/blob/main/SDK_GUIDE.md">
+    Deep-dive walkthrough with debugging and production patterns
+  </Card>
+  <Card title="Source Code" icon="code" href="https://github.com/jun-bit-pulse-ai/prompt-shields-sdk/tree/main/packages/sdk">
+    SDK implementation on GitHub
+  </Card>
+  <Card title="Ardoq Integration" icon="diagram-project" href="/integrations/ardoq">
+    Connect Prompt Shields to Ardoq AI Lens
+  </Card>
+  <Card title="Partner API" icon="plug" href="/api-reference/overview">
+    Read-only API for EA platform integration
+  </Card>
+</CardGroup>
