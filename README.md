@@ -100,6 +100,8 @@ prompt-shields-sdk/
 
 Drop-in replacements for the OpenAI and Anthropic clients. Every LLM call is wrapped with structured telemetry — **fail-open**, so a collector outage never blocks a model call. Sync and async surfaces, PII detection, and cost estimation are all built in.
 
+> **Developer Guide:** For a deep-dive walkthrough — architecture, configuration, debugging, FastAPI patterns, and FAQ — see [`SDK_GUIDE.md`](SDK_GUIDE.md).
+
 ```python
 from prompt_shields import ShieldsOpenAI
 
