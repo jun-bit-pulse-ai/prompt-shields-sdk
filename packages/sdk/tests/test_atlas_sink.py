@@ -241,3 +241,116 @@ def test_hash_messages_none_when_no_text():
     assert hash_messages([{"role": "user", "content": ""}]) is None
     # Non-string content (e.g. OpenAI content-parts lists) is skipped
     assert hash_messages([{"role": "user", "content": [{"type": "text"}]}]) is None
+
+
+# --- sync client wiring ----------------------------------------------------
+
+
+from unittest.mock import MagicMock
+
+from prompt_shields import ShieldsClient
+
+
+def _mock_openai_response(prompt_tokens=10, completion_tokens=20):
+    resp = MagicMock()
+    resp.usage.prompt_tokens = prompt_tokens
+    resp.usage.completion_tokens = completion_tokens
+    resp.choices = []
+    return resp
+
+
+def _clear_atlas_env(monkeypatch):
+    monkeypatch.delenv("PS_ATLAS_URL", raising=False)
+    monkeypatch.delenv("PS_ATLAS_API_KEY", raising=False)
+
+
+def test_atlas_sink_inactive_by_default(monkeypatch):
+    _clear_atlas_env(monkeypatch)
+    client = ShieldsClient(api_key="sk-test", ps_api_key="ps-test")
+    assert client._atlas is None
+
+
+def test_atlas_sink_inactive_when_partially_configured(monkeypatch):
+    _clear_atlas_env(monkeypatch)
+    url_only = ShieldsClient(api_key="sk-test", ps_api_key="ps-test",
+                             atlas_url="http://atlas.test")
+    key_only = ShieldsClient(api_key="sk-test", ps_api_key="ps-test",
+                             atlas_api_key="aigrc_k")
+    assert url_only._atlas is None
+    assert key_only._atlas is None
+
+
+def test_atlas_sink_active_via_kwargs(monkeypatch):
+    _clear_atlas_env(monkeypatch)
+    client = ShieldsClient(api_key="sk-test", ps_api_key="ps-test",
+                           atlas_url="http://atlas.test",
+                           atlas_api_key="aigrc_k")
+    assert isinstance(client._atlas, AtlasTelemetrySender)
+    assert client._atlas._url == "http://atlas.test/api/v1/telemetry/prompt-events"
+
+
+def test_atlas_sink_active_via_env_vars(monkeypatch):
+    monkeypatch.setenv("PS_ATLAS_URL", "http://atlas.env")
+    monkeypatch.setenv("PS_ATLAS_API_KEY", "aigrc_env")
+    client = ShieldsClient(api_key="sk-test", ps_api_key="ps-test")
+    assert isinstance(client._atlas, AtlasTelemetrySender)
+    assert client._atlas._headers == {"X-API-Key": "aigrc_env"}
+
+
+def test_sync_create_sends_atlas_event_with_no_prompt_text(monkeypatch):
+    """THE privacy test: send_prompt_text=True must not leak text to atlas.
+
+    Asserts on the SERIALIZED request body — not the event dict — so any
+    future field that smuggles text in would fail here too.
+    """
+    _clear_atlas_env(monkeypatch)
+    secret = "contact jane@acme.com about patient id 9"
+    client = ShieldsClient(
+        api_key="sk-test", ps_api_key="ps-test",
+        send_prompt_text=True,  # collector opt-in must NOT affect atlas
+        atlas_url="http://atlas.test", atlas_api_key="aigrc_test_key",
+    )
+    collector_captured: list[httpx.Request] = []
+    atlas_captured: list[httpx.Request] = []
+    client._telemetry._sync_client = httpx.Client(
+        transport=_capture_transport(collector_captured))
+    client._atlas._sync_client = httpx.Client(
+        transport=_capture_transport(atlas_captured))
+    monkeypatch.setattr(client.chat.completions, "_call_upstream",
+                        lambda **kwargs: _mock_openai_response())
+
+    client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": secret}],
+        ps_metadata={"session_id": "s-1", "user_id": "u-1"},
+    )
+
+    # Atlas got exactly one event with the full mapped shape...
+    assert len(atlas_captured) == 1
+    raw = atlas_captured[0].content.decode()
+    event = json.loads(raw)["events"][0]
+    assert atlas_captured[0].headers["x-api-key"] == "aigrc_test_key"
+    assert event["source"] == "sdk"
+    assert event["event_kind"] == "activity"
+    assert event["action"] == "allowed"
+    assert event["vendor"] == "openai"
+    assert event["model"] == "gpt-4o"
+    assert event["tokens_in"] == 10
+    assert event["tokens_out"] == 20
+    assert event["occurrences"] == 1
+    assert event["session_id"] == "s-1"
+    assert event["user_external_id"] == "u-1"
+    assert "estimated_cost_usd" in event
+    assert event["prompt_hash"] == hashlib.sha256(secret.encode()).hexdigest()
+    assert event["pii_categories"] == {"email": 1, "health_data": 1}
+
+    # ...and NO prompt text anywhere in the serialized atlas payload.
+    assert secret not in raw
+    assert "jane@acme.com" not in raw
+    assert "prompt_text" not in raw
+
+    # Collector behavior unchanged: opt-in text still flows to the collector.
+    assert len(collector_captured) == 1
+    collector_raw = collector_captured[0].content.decode()
+    assert "prompt_text" in collector_raw
+    assert secret in collector_raw
