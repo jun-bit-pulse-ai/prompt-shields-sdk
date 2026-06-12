@@ -7,6 +7,7 @@ app is already async (FastAPI handlers, asyncio agents, etc.) — the sync
 native async client avoids the thread overhead.
 """
 
+import os
 import time
 from typing import Any
 
@@ -14,7 +15,11 @@ from prompt_shields.client import _fingerprint
 from prompt_shields.pii import scan_messages
 from prompt_shields.pricing import estimate_cost
 from prompt_shields.providers import get_adapter
-from prompt_shields.telemetry import TelemetrySender
+from prompt_shields.telemetry import (
+    AtlasTelemetrySender,
+    TelemetrySender,
+    build_atlas_event,
+)
 from prompt_shields.types import PSMetadata
 
 
@@ -27,6 +32,8 @@ class AsyncShieldsClient:
         ps_api_key: str,
         vendor: str = "openai",
         ps_collector_url: str = "http://localhost:8000",
+        atlas_url: str | None = None,
+        atlas_api_key: str | None = None,
         business_unit: str | None = None,
         use_case: str | None = None,
         owner: str | None = None,
@@ -42,6 +49,16 @@ class AsyncShieldsClient:
         self._adapter = get_adapter(vendor)
         self._ps_api_key = ps_api_key
         self._telemetry = TelemetrySender(ps_collector_url, ps_api_key)
+        atlas_url = atlas_url if atlas_url is not None else os.environ.get("PS_ATLAS_URL")
+        atlas_api_key = (
+            atlas_api_key if atlas_api_key is not None
+            else os.environ.get("PS_ATLAS_API_KEY")
+        )
+        self._atlas: AtlasTelemetrySender | None = (
+            AtlasTelemetrySender(atlas_url, atlas_api_key)
+            if atlas_url and atlas_api_key
+            else None
+        )
         self._scan_pii = scan_pii
         self._send_prompt_text = send_prompt_text
         self._pricing_table = pricing_table
@@ -127,6 +144,8 @@ class AsyncShieldsClient:
 
     async def aclose(self):
         await self._telemetry.close()
+        if self._atlas is not None:
+            await self._atlas.close()
 
 
 class _AsyncChatNamespace:
@@ -160,6 +179,10 @@ class _AsyncCompletionsNamespace:
         )
         self._parent._telemetry.enqueue(event)
         await self._parent._telemetry.flush()
+
+        if self._parent._atlas is not None:
+            self._parent._atlas.enqueue(build_atlas_event(event, messages))
+            await self._parent._atlas.flush()
 
         return response
 

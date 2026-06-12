@@ -354,3 +354,57 @@ def test_sync_create_sends_atlas_event_with_no_prompt_text(monkeypatch):
     collector_raw = collector_captured[0].content.decode()
     assert "prompt_text" in collector_raw
     assert secret in collector_raw
+
+
+# --- async client wiring -----------------------------------------------------
+
+
+from prompt_shields import AsyncShieldsClient
+
+
+def test_async_client_atlas_config_mirrors_sync(monkeypatch):
+    _clear_atlas_env(monkeypatch)
+    assert AsyncShieldsClient(api_key="sk-test", ps_api_key="ps-test")._atlas is None
+    configured = AsyncShieldsClient(
+        api_key="sk-test", ps_api_key="ps-test",
+        atlas_url="http://atlas.test", atlas_api_key="aigrc_k",
+    )
+    assert isinstance(configured._atlas, AtlasTelemetrySender)
+
+
+@pytest.mark.asyncio
+async def test_async_create_sends_atlas_event_with_no_prompt_text(monkeypatch):
+    _clear_atlas_env(monkeypatch)
+    secret = "contact jane@acme.com about patient id 9"
+    client = AsyncShieldsClient(
+        api_key="sk-test", ps_api_key="ps-test",
+        send_prompt_text=True,
+        atlas_url="http://atlas.test", atlas_api_key="aigrc_test_key",
+    )
+    atlas_captured: list[httpx.Request] = []
+    client._telemetry._async_client = httpx.AsyncClient(
+        transport=_capture_transport([]))
+    client._atlas._async_client = httpx.AsyncClient(
+        transport=_capture_transport(atlas_captured))
+
+    async def fake_upstream(**kwargs):
+        return _mock_openai_response()
+
+    monkeypatch.setattr(client.chat.completions, "_call_upstream", fake_upstream)
+
+    await client.chat.completions.create(
+        model="gpt-4o", messages=[{"role": "user", "content": secret}],
+    )
+
+    assert len(atlas_captured) == 1
+    raw = atlas_captured[0].content.decode()
+    event = json.loads(raw)["events"][0]
+    assert event["source"] == "sdk"
+    assert event["event_kind"] == "activity"
+    assert event["prompt_hash"] == hashlib.sha256(secret.encode()).hexdigest()
+    assert secret not in raw
+    assert "prompt_text" not in raw
+
+    # aclose() must close the atlas sender too (its close() flushes first).
+    await client.aclose()
+    assert client._atlas._async_client.is_closed
