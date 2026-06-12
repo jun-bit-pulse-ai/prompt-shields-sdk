@@ -51,10 +51,6 @@ class ShieldsClient:
         ps_api_key: str,
         vendor: str = "openai",
         ps_collector_url: str = "http://localhost:8000",
-        # Optional atlas.ai sink (second destination; collector unchanged).
-        # Env fallback: PS_ATLAS_URL / PS_ATLAS_API_KEY. Inactive unless BOTH set.
-        atlas_url: str | None = None,
-        atlas_api_key: str | None = None,
         # Discovery metadata (sent on every event)
         business_unit: str | None = None,
         use_case: str | None = None,
@@ -66,6 +62,10 @@ class ShieldsClient:
         scan_pii: bool = True,
         send_prompt_text: bool = False,
         pricing_table: dict | None = None,
+        # Optional atlas.ai sink (second destination; collector unchanged).
+        # Env fallback: PS_ATLAS_URL / PS_ATLAS_API_KEY. Inactive unless BOTH set.
+        atlas_url: str | None = None,
+        atlas_api_key: str | None = None,
         **provider_kwargs,
     ):
         self._vendor = vendor

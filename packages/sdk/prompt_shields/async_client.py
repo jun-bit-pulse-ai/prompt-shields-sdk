@@ -32,8 +32,6 @@ class AsyncShieldsClient:
         ps_api_key: str,
         vendor: str = "openai",
         ps_collector_url: str = "http://localhost:8000",
-        atlas_url: str | None = None,
-        atlas_api_key: str | None = None,
         business_unit: str | None = None,
         use_case: str | None = None,
         owner: str | None = None,
@@ -43,6 +41,8 @@ class AsyncShieldsClient:
         scan_pii: bool = True,
         send_prompt_text: bool = False,
         pricing_table: dict | None = None,
+        atlas_url: str | None = None,
+        atlas_api_key: str | None = None,
         **provider_kwargs,
     ):
         self._vendor = vendor
