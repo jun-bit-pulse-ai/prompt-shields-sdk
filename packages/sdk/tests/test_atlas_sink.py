@@ -20,6 +20,8 @@ from prompt_shields.telemetry import (
     ATLAS_EVENTS_PATH,
     ATLAS_MAX_BATCH,
     AtlasTelemetrySender,
+    hash_messages,
+    build_atlas_event,
 )
 
 
@@ -130,3 +132,112 @@ def test_atlas_sender_chunks_batches_at_500():
     sizes = [len(json.loads(r.content)["events"]) for r in captured]
     assert sizes == [500, 1]
     assert len(sender._buffer) == 0
+
+
+# --- build_atlas_event: shape and field mapping --------------------------------
+
+
+def test_build_atlas_event_shape_constants():
+    event = build_atlas_event({"vendor": "openai", "model": "gpt-4o"},
+                              [{"role": "user", "content": "hi"}])
+    assert event["source"] == "sdk"
+    assert event["event_kind"] == "activity"
+    assert event["action"] == "allowed"
+    assert event["occurrences"] == 1
+    # occurred_at is ISO-8601 (client-side timestamp survives buffering delay)
+    from datetime import datetime
+    datetime.fromisoformat(event["occurred_at"])
+
+
+def test_build_atlas_event_field_mapping():
+    collector_event = {
+        "vendor": "anthropic",
+        "model": "claude-sonnet-4-20250514",
+        "tokens_in": 50,
+        "tokens_out": 100,
+        "cost": 0.00165,
+        "session_id": "session-xyz",
+        "user_id": "auth0|abc123",
+    }
+    event = build_atlas_event(collector_event, [{"role": "user", "content": "hi"}])
+    assert event["vendor"] == "anthropic"
+    assert event["model"] == "claude-sonnet-4-20250514"
+    assert event["tokens_in"] == 50
+    assert event["tokens_out"] == 100
+    assert event["estimated_cost_usd"] == 0.00165   # cost -> estimated_cost_usd
+    assert event["session_id"] == "session-xyz"
+    assert event["user_external_id"] == "auth0|abc123"  # user_id -> user_external_id
+    assert "cost" not in event and "user_id" not in event
+
+
+def test_build_atlas_event_omits_none_and_absent_fields():
+    # The atlas schema is extra="forbid" but nullable — we omit rather than
+    # send nulls so payloads stay minimal and unambiguous.
+    event = build_atlas_event(
+        {"vendor": "openai", "model": "gpt-99-future", "cost": None,
+         "tokens_in": None, "tokens_out": None},
+        [],
+    )
+    for absent in ("estimated_cost_usd", "tokens_in", "tokens_out",
+                   "session_id", "user_external_id", "pii_categories",
+                   "prompt_hash"):
+        assert absent not in event
+
+
+def test_build_atlas_event_pii_list_maps_to_count_one():
+    # detect_pii_categories returns names only; each maps to count 1 —
+    # we do not invent per-category match counts.
+    event = build_atlas_event(
+        {"vendor": "openai", "model": "gpt-4o",
+         "detected_pii_types": ["email", "ssn"]},
+        [{"role": "user", "content": "hi"}],
+    )
+    assert event["pii_categories"] == {"email": 1, "ssn": 1}
+
+
+def test_build_atlas_event_never_copies_prompt_text_or_unknown_fields():
+    # Collector events legitimately carry fields the atlas schema forbids
+    # (extra="forbid" would skip the row) — and prompt_text, which must never
+    # leave the host toward atlas. Whitelist-only copy guarantees both.
+    secret = "the launch codes are 0000"
+    collector_event = {
+        "vendor": "openai", "model": "gpt-4o",
+        "prompt_text": secret,
+        "latency_ms": 100, "tool_calls_used": 2,
+        "api_key_fingerprint": "abcd1234abcd1234",
+        "business_unit": "HR", "use_case_name": "screening",
+        "owner_email": "jane@test.com",
+    }
+    event = build_atlas_event(collector_event, [{"role": "user", "content": secret}])
+    allowed = {"source", "event_kind", "action", "occurrences", "occurred_at",
+               "vendor", "model", "tokens_in", "tokens_out",
+               "estimated_cost_usd", "session_id", "user_external_id",
+               "pii_categories", "prompt_hash"}
+    assert set(event) <= allowed
+    assert secret not in json.dumps(event)
+
+
+# --- hash_messages -------------------------------------------------------------
+
+
+def test_hash_messages_deterministic_lowercase_hex():
+    messages = [
+        {"role": "system", "content": "be brief"},
+        {"role": "user", "content": "hello world"},
+    ]
+    h1 = hash_messages(messages)
+    h2 = hash_messages(messages)
+    assert h1 == h2
+    assert re.fullmatch(r"[0-9a-f]{64}", h1)  # exactly 64 LOWERCASE hex chars
+    assert h1 == hashlib.sha256("be briefhello world".encode("utf-8")).hexdigest()
+    # different text -> different hash
+    assert hash_messages([{"role": "user", "content": "hello worlds"}]) != h1
+
+
+def test_hash_messages_none_when_no_text():
+    # No text content => return None => caller omits prompt_hash entirely.
+    assert hash_messages([]) is None
+    assert hash_messages(["not-a-dict"]) is None
+    assert hash_messages([{"role": "user", "content": ""}]) is None
+    # Non-string content (e.g. OpenAI content-parts lists) is skipped
+    assert hash_messages([{"role": "user", "content": [{"type": "text"}]}]) is None

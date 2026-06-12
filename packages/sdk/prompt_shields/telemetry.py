@@ -1,6 +1,8 @@
 import asyncio
+import hashlib
 import logging
 from collections import deque
+from datetime import datetime, timezone
 import httpx
 
 logger = logging.getLogger("prompt_shields.telemetry")
@@ -11,6 +13,71 @@ MAX_BUFFER_SIZE = 1000
 # docs/superpowers/specs/2026-06-11-prompt-telemetry-design.md)
 ATLAS_EVENTS_PATH = "/api/v1/telemetry/prompt-events"
 ATLAS_MAX_BATCH = 500  # server rejects envelopes with more than 500 events
+
+
+# Whitelist mapping: collector-event key -> atlas wire key. The atlas schema
+# is extra="forbid", so anything NOT in this map (prompt_text, latency_ms,
+# api_key_fingerprint, business_unit, ...) must never be copied across —
+# the server would skip the row, and prompt_text must never leave the host.
+_ATLAS_FIELD_MAP = {
+    "vendor": "vendor",
+    "model": "model",
+    "tokens_in": "tokens_in",
+    "tokens_out": "tokens_out",
+    "cost": "estimated_cost_usd",
+    "session_id": "session_id",
+    "user_id": "user_external_id",
+}
+
+
+def hash_messages(messages: list) -> str | None:
+    """SHA-256 hex digest (64 lowercase chars) of concatenated message text.
+
+    Returns None when there is no text content; callers omit prompt_hash.
+    Non-dict messages and non-string contents are skipped, matching how
+    pii.scan_messages and the prompt_text join treat them.
+    """
+    combined = "".join(
+        m["content"]
+        for m in messages
+        if isinstance(m, dict) and isinstance(m.get("content"), str)
+    )
+    if not combined:
+        return None
+    return hashlib.sha256(combined.encode("utf-8")).hexdigest()
+
+
+def build_atlas_event(collector_event: dict, messages: list) -> dict:
+    """Map an already-built collector event onto the atlas prompt-event schema.
+
+    PRIVACY CONTRACT: whitelist-only copy. prompt_text (present on the
+    collector event when send_prompt_text=True) is structurally incapable of
+    reaching the atlas payload because it is not in _ATLAS_FIELD_MAP.
+    """
+    event: dict = {
+        "source": "sdk",
+        "event_kind": "activity",
+        "action": "allowed",
+        "occurrences": 1,
+        # Stamp at build time: events may sit in the buffer across retries,
+        # so send time is not event time.
+        "occurred_at": datetime.now(timezone.utc).isoformat(),
+    }
+    for src_key, wire_key in _ATLAS_FIELD_MAP.items():
+        value = collector_event.get(src_key)
+        if value is not None:
+            event[wire_key] = value
+
+    # detect_pii_categories returns category names only — each detected
+    # category maps to count 1; we do not invent per-category match counts.
+    categories = collector_event.get("detected_pii_types")
+    if categories:
+        event["pii_categories"] = {category: 1 for category in categories}
+
+    prompt_hash = hash_messages(messages)
+    if prompt_hash is not None:
+        event["prompt_hash"] = prompt_hash
+    return event
 
 
 class TelemetrySender:
