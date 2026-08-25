@@ -1,322 +1,144 @@
-# Prompt Shields — Developer SDK & AI Gateway
+# Prompt Shields SDK
 
-![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15%2B%20%2B%20pgvector-336791)
-![License](https://img.shields.io/badge/license-Apache--2.0-blue)
+[![Licence](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
 
-Discover, classify, and govern every AI system running across your enterprise — whether sanctioned or shadow.
+A Python SDK, HTTP gateway, and telemetry collector that build a live inventory of every AI model call your own code makes.
 
-This repository contains the **developer-facing components** of Prompt Shields: a Python SDK, an AI gateway proxy, a telemetry collector, and connectors to Enterprise Architecture tools such as Ardoq.
+## The problem
 
-Browser extensions (Chrome, Safari, Edge) and the macOS desktop app that capture shadow AI usage live in separate repositories. Everything feeds into the same collector and registry.
+Your organisation's AI risk register is built from what people told you they were building. Meanwhile any engineer with an API key can put a large language model into production in an afternoon, and nothing in your existing stack sees it: a cloud access security broker sees TLS to `api.openai.com` and nothing more, your enterprise architecture tool holds the systems inventory but not the models running inside them, and your data loss prevention controls never inspect the prompt payload. Without a discovery layer at the code level, the AI asset register you present to an auditor is a survey, not an inventory — and the gap between them is where unreviewed models handling regulated data live.
 
----
+## Quickstart
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                 ENTERPRISE AI LANDSCAPE                  │
-├────────────────────┬────────────────────────────────────┤
-│  CLIENT-SIDE       │       CODE/INFRA-SIDE              │
-│  (Existing)        │       (This Repo)                  │
-│                    │                                    │
-│  Chrome Extension  │  ┌──────────────────────┐         │
-│  Safari Extension  │  │  PS Developer SDK    │         │
-│  Edge Extension    │  │  (Python)            │         │
-│  macOS App         │  └──────┬───────────────┘         │
-│                    │         │                         │
-│                    │  ┌──────▼───────────────┐         │
-│                    │  │  PS AI Gateway       │         │
-│                    │  │  (Forked Portkey)    │         │
-│                    │  └──────┬───────────────┘         │
-├────────────────────┴─────────┼─────────────────────────┤
-│              PROMPT SHIELDS CORE                        │
-│                              │                         │
-│           ┌──────────────────▼──────────────┐          │
-│           │     Telemetry Collector          │          │
-│           │     (FastAPI)                    │          │
-│           └──────────────────┬──────────────┘          │
-│                              │                         │
-│           ┌──────────────────▼──────────────┐          │
-│           │     PostgreSQL + pgvector        │          │
-│           │     AI Asset Registry            │          │
-│           └──────────────────┬──────────────┘          │
-│                              │                         │
-│           ┌──────────────────▼──────────────┐          │
-│           │     Registry REST API            │          │
-│           └─────────────────────────────────┘          │
-├─────────────────────────────────────────────────────────┤
-│              CONNECTOR LAYER                            │
-│  ┌─────────┐  ┌─────────────┐  ┌──────────┐           │
-│  │ Ardoq   │  │ ServiceNow  │  │ Custom   │           │
-│  │ (v1)    │  │ (Future)    │  │ REST     │           │
-│  └─────────┘  └─────────────┘  └──────────┘           │
-└─────────────────────────────────────────────────────────┘
+```bash
+git clone https://github.com/Bit-Pulse-AI/prompt-shields-sdk.git && cd prompt-shields-sdk
+docker compose up -d
+pip install -e "packages/collector[dev]" -e "packages/sdk[all]"
+(cd packages/db && alembic upgrade head)
+PYTHONPATH=packages:packages/collector python3 demo/seed_data.py && python3 demo/demo_sdk_flow.py
 ```
 
----
+The demo seeds a registry, ships a synthetic event through the collector, and prints the discovered asset back out. Requires Docker and Python 3.11 or later.
 
-## Repository Layout
+## How does it work?
+
+Three components write into one registry. **A telemetry collector is an HTTP service that receives structured records describing AI calls and reconciles them into a deduplicated asset inventory.** **An AI gateway is a proxy that sits on the HTTP path between an application and a model provider, so it can observe calls without the application being modified.** **An AI asset registry is a database of the distinct AI systems in use, each with an owner, a business unit, a data classification, and a confidence score.**
 
 ```
-prompt-shields-sdk/
-├── packages/
-│   ├── sdk/                    # Python SDK (ShieldsClient)
-│   │   └── prompt_shields/
-│   │       ├── client.py       # Drop-in OpenAI wrapper
-│   │       ├── telemetry.py    # Async event shipping
-│   │       └── types.py        # Shared type definitions
-│   ├── collector/              # Telemetry Collector (FastAPI)
-│   │   └── collector/
-│   │       ├── app.py          # Application entrypoint
-│   │       ├── ingest.py       # Event ingestion endpoint
-│   │       ├── dedup.py        # Asset deduplication + confidence scoring
-│   │       ├── registry.py     # Registry REST API
-│   │       ├── embeddings.py   # pgvector semantic search
-│   │       └── auth.py         # Multi-tenant auth
-│   └── db/                     # Database layer
-│       ├── models.py           # SQLAlchemy async models
-│       └── alembic/            # Schema migrations
-├── gateway/                    # AI Gateway (forked Portkey, TypeScript)
-│   └── src/middlewares/
-│       └── ps-telemetry.ts     # Prompt Shields telemetry middleware
-├── demo/
-│   ├── seed_data.py            # Seed the registry with sample assets
-│   ├── demo_sdk_flow.py        # End-to-end demo script
-│   └── ardoq_recipe.json       # Ardoq Integration Builder recipe
-├── tests/                      # Integration tests (requires PostgreSQL)
-├── scripts/
-│   └── init-test-db.sql        # Test database initialisation
-└── docker-compose.yml          # PostgreSQL + Collector
+ Your code                          Your code (unmodified)
+     |                                       |
+     | ShieldsOpenAI / ShieldsAnthropic      | OPENAI_BASE_URL=gateway
+     v                                       v
+ +---------+                          +-------------+
+ | Python  |                          | AI Gateway  |---> model provider
+ |  SDK    |---> model provider       | (TypeScript)|
+ +----+----+                          +------+------+
+      |                                      |
+      |          structured events           |
+      +------------------+-------------------+
+                         v
+              +----------------------+
+              | Telemetry Collector  |   fail-open: a collector
+              |      (FastAPI)       |   outage never blocks a
+              +----------+-----------+   model call
+                         v
+              +----------------------+
+              | PostgreSQL + pgvector|   dedup, confidence scoring,
+              |    Asset Registry    |   semantic search
+              +----------+-----------+
+                         v
+                  Registry REST API
+                         |
+        +----------------+----------------+
+        v                v                v
+     Ardoq          ServiceNow        Custom REST
+   (shipped)        (planned)          (shipped)
 ```
 
----
+The SDK wraps the OpenAI and Anthropic clients and emits an event per call. **Fail-open means the telemetry path is allowed to fail silently: events buffer locally, up to 1000, with exponential-backoff retry, and the model call proceeds regardless.** The gateway covers applications you cannot or will not modify. The collector fingerprints incoming assets and assigns a confidence score of `low`, `medium`, `high`, or `verified` depending on how many independent sources corroborate them.
 
-## Components
+### What does the SDK capture?
 
-### Python SDK
+| Captured | Notes |
+|---|---|
+| Vendor, model, tokens, latency, cost | Built-in pricing table for OpenAI, Anthropic, and Google models |
+| Ownership metadata | Business unit, use case, owner, environment, data classification |
+| PII categories | Pattern-based: email, phone, national insurance or social security number, payment card, IP address, IBAN, health data, financial data |
+| Tool and function calls | OpenAI `tool_calls` and Anthropic `tool_use` blocks |
+| API key fingerprint | Truncated SHA-256, never the raw key |
+| Requested versus served model | Makes routing savings provable |
 
-Drop-in replacements for the OpenAI and Anthropic clients. Every LLM call is wrapped with structured telemetry — **fail-open**, so a collector outage never blocks a model call. Sync and async surfaces, PII detection, cost estimation, and **cost-aware route hints** are all built in.
-
-> **Developer Guide:** For a deep-dive walkthrough — architecture, configuration, debugging, FastAPI patterns, and FAQ — see [`SDK_GUIDE.md`](SDK_GUIDE.md).
+Prompt text is never transmitted unless you explicitly set `send_prompt_text=True`.
 
 ```python
 from prompt_shields import ShieldsOpenAI
 
 client = ShieldsOpenAI(
-    api_key="sk-...",                          # OpenAI API key (hashed before send)
-    ps_api_key="ps-...",                       # Prompt Shields tenant key
+    api_key="sk-...",
+    ps_api_key="ps-...",
     ps_collector_url="http://localhost:8000",
     business_unit="HR",
     use_case="interview-screening",
     owner="jane.doe@acme.com",
     data_classification="confidential",
-    environment="production",
-    calling_service="hiring-service",
 )
 
 response = client.chat.completions.create(
     model="gpt-4o",
-    messages=[{"role": "user", "content": "Summarize this candidate..."}],
-    ps_metadata={
-        "data_sources": ["candidates_db"],
-        "output_destination": "hiring_dashboard",
-        "risk_tags": ["pii", "gdpr"],
-        "session_id": "review-2025-04-12-001",
-    },
+    messages=[{"role": "user", "content": "Summarise this candidate..."}],
 )
 ```
 
-**Anthropic, identical surface:**
+`AsyncShieldsOpenAI` and `ShieldsAnthropic` present the same surface. A deeper walkthrough is in [SDK_GUIDE.md](SDK_GUIDE.md).
 
-```python
-from prompt_shields import ShieldsAnthropic
-
-client = ShieldsAnthropic(api_key="sk-ant-...", ps_api_key="ps-...")
-response = client.chat.completions.create(
-    model="claude-sonnet-4-20250514",
-    messages=[{"role": "user", "content": "..."}],
-    max_tokens=1024,
-)
-```
-
-**Async variants** for FastAPI / asyncio agents:
-
-```python
-from prompt_shields import AsyncShieldsOpenAI
-
-client = AsyncShieldsOpenAI(api_key="sk-...", ps_api_key="ps-...")
-response = await client.chat.completions.create(model="gpt-4o", messages=[...])
-```
-
-**Cost-aware routing** — attach an intent hint and let the gateway pick the cheapest model that satisfies it. The SDK emits `X-PS-*` headers; the gateway decides (transparent-by-default, per-route override):
-
-```python
-from prompt_shields import RouteHint
-
-client = ShieldsOpenAI(api_key="sk-...", ps_api_key="ps-...", base_url=PS_GATEWAY_URL)
-
-# "Throwaway prompt — cheap is fine, cap the spend." Gateway downgrades the model.
-response = client.chat.completions.create(
-    model="auto",
-    messages=[{"role": "user", "content": "Classify sentiment: ..."}],
-    route=RouteHint(quality="draft", max_cost=0.005),
-)
-# Event records requested_model="auto" vs served_model="gpt-4o-mini" → savings are provable.
-```
-
-**What ships in the SDK:**
-
-| Capability | Notes |
-|------------|-------|
-| OpenAI + Anthropic providers | Pluggable `providers.py` adapter layer; new vendors add ~20 lines |
-| Sync + async clients | `ShieldsClient` (threaded flush) and `AsyncShieldsClient` (native await) |
-| Tool/function call capture | OpenAI `tool_calls`, Anthropic `tool_use` blocks parsed automatically |
-| PII detection | Pattern-based: `email`, `phone`, `ssn`, `credit_card`, `ip_address`, `iban`, `health_data`, `financial_data` — categories only, never content |
-| Cost estimation | Built-in pricing table for OpenAI/Anthropic/Google models; `pricing_table=` override |
-| Cost-aware route hints | `RouteHint(quality=, max_cost=, model_group=, allow_cache=)` → `X-PS-*` headers the gateway routes on; `requested_model` vs `served_model` captured per event |
-| API key fingerprint | SHA-256 truncated identity, never the raw key |
-| `ps_metadata` per-request | `data_sources`, `output_destination`, `risk_tags`, `session_id`, `user_id` flow into events |
-| Privacy by default | `prompt_text` never sent unless `send_prompt_text=True` is explicitly opted in |
-| Fail-open buffering | 1000-event local buffer with exponential-backoff retry; oldest events drop on overflow |
-
-### AI Gateway (zero code change)
-
-Route existing applications through the gateway proxy instead of calling OpenAI directly. No application changes required — telemetry is injected at the HTTP layer.
-
-Built on a focused fork of [Portkey AI Gateway](https://github.com/Portkey-AI/gateway) (MIT) with a custom `ps-telemetry.ts` middleware. Routing, caching, and guardrails features have been stripped; the fork is discovery-focused.
+### Running the tests
 
 ```bash
-docker run -p 8080:8080 \
-  -e PS_COLLECTOR_URL=http://collector:8000 \
-  -e PS_API_KEY=ps-... \
-  promptshields/gateway
-
-# Point your app at the gateway — nothing else changes
-export OPENAI_BASE_URL=http://localhost:8080/v1
+PYTHONPATH=packages:packages/collector python3 -m pytest packages/collector/tests -v
+PYTHONPATH=packages/sdk python3 -m pytest packages/sdk/tests -v
 ```
 
-### Telemetry Collector
+## What this does not do
 
-FastAPI service that receives events from the SDK and gateway, deduplicates AI assets with confidence scoring (`low / medium / high / verified`), and exposes the Registry API.
+This is a discovery and inventory tool. It is not a runtime guardrail, and it should not be sold internally as one.
 
-**Ingest**
+- **It does not block anything.** There is no enforcement path. A prompt containing regulated data is recorded and passed through. If you need a control that stops the call, this is not it.
+- **PII detection is pattern-based and reports categories only.** Regular expressions over structured formats. It will miss free-text disclosure, names, and anything unusually formatted, and it will produce false positives on strings that merely look like an identifier. It records that a category was seen, never the matched value.
+- **It does not see AI your staff use in a browser.** SDK and gateway instrumentation covers code paths only. Shadow use of ChatGPT or Claude by a person is a separate problem, covered by the endpoint clients documented at [docs.promptshields.com](https://docs.promptshields.com).
+- **Gateway coverage is opt-in per application.** An application that keeps calling the provider directly, with no SDK and no rebased URL, stays invisible. Discovery completeness is a rollout property, not a technical guarantee.
+- **Cost figures are estimates.** Computed from a local pricing table against observed token counts. They will not reconcile to a provider invoice.
+- **Confidence scores are corroboration counts, not assurance.** A `verified` asset is one several sources agree on. It has not been reviewed by anyone.
+- **No tamper-evidence in this repository.** Events are ordinary database rows. Nothing here produces an audit artefact that would survive a challenge to its integrity.
+- **Self-hosting means you own the security of the deployment.** The collector holds tenant API keys and asset metadata. Network exposure, backups, patching, and key rotation are yours.
 
-```
-POST /ingest/events
-```
+## Free versus Prompt Shields Cloud
 
-**Registry API**
+The boundary is deliberate and published so it can be held to: **anything an individual engineer needs is free; anything an organisation or an auditor needs is paid.** No capability will be moved from the free side to the paid side.
 
-```
-GET  /api/v1/registry/assets                    # List assets (filterable)
-GET  /api/v1/registry/assets/{id}               # Asset detail
-GET  /api/v1/registry/assets/{id}/data-flows    # Data lineage
-GET  /api/v1/registry/assets/{id}/risks         # Risk mappings
-GET  /api/v1/registry/vendors                   # Discovered vendors
-GET  /api/v1/registry/models                    # Discovered models
-GET  /api/v1/registry/search?q=...              # Semantic search (pgvector)
-```
+| | Free — Apache 2.0, self-hosted | Prompt Shields Cloud |
+|---|---|---|
+| SDK, gateway, collector | Complete, no feature gating | Same code |
+| Detection | Pattern-based scanners in this repository | Managed detection models, retrained continuously |
+| Deployment | Self-hosted, single project, single user | Managed, multi-project, multi-tenant |
+| Dashboard | Basic self-hosted registry views | Managed risk dashboard, OWASP LLM Top 10 and MITRE ATLAS mapping across traces |
+| Telemetry | OpenTelemetry-compatible emission you store yourself | Hosted retention, cross-project alerting and anomaly detection |
+| Governance | None | Organisation-wide policy enforcement, policy versioning and approval workflows, environment promotion, SSO and SAML, SCIM, RBAC |
+| Compliance evidence | None | Hash-chained tamper-evident audit logs, EU AI Act Article 12 exports, one-click incident reports, NIST AI RMF and OWASP mapping tables |
+| Data controls | Entirely yours | Bring-your-own keys, region pinning, air-gapped deployment |
+| Support | Community issues, best effort | Service level agreements, named support, data processing agreement and penetration test report handling |
 
-### Ardoq Connector
+We do not monetise the code. We monetise hosting, enterprise controls, compliance evidence, and accountability. A fork can take the scanners; it cannot take the managed models, the certifications, or the service level agreement.
 
-`demo/ardoq_recipe.json` is an [Ardoq Integration Builder](https://help.ardoq.com/en/articles/44154-integration-builder) recipe that reads from the Registry API and writes structured AI asset data into Ardoq AI Lens — including vendors, models, use cases, data flows, and risk mappings.
+## Links
 
----
+- Documentation: [docs.promptshields.com](https://docs.promptshields.com) — start at [Developers](https://docs.promptshields.com/developers/overview)
+- Developer guide: [SDK_GUIDE.md](SDK_GUIDE.md)
+- Security policy: [SECURITY.md](SECURITY.md) — report privately to security@promptshields.com, never via a public issue
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
-## Quick Start
+## Licence
 
-```bash
-# 1. Clone
-git clone https://github.com/Bit-Pulse-AI/prompt-shields-sdk.git
-cd prompt-shields-sdk
+Apache 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-# 2. Start PostgreSQL with pgvector
-docker compose up -d db
-
-# 3. Install Python packages
-pip install -e packages/collector/[dev]
-pip install -e packages/sdk/[dev]
-
-# 4. Run migrations
-cd packages/db && alembic upgrade head && cd ../..
-
-# 5. Seed demo data
-PYTHONPATH=packages:packages/collector python3 demo/seed_data.py
-
-# 6. Start the collector
-PYTHONPATH=packages:packages/collector uvicorn collector.app:app --port 8000
-
-# 7. Run the end-to-end demo
-python3 demo/demo_sdk_flow.py
-```
-
----
-
-## Running Tests
-
-```bash
-# Unit tests — no database required
-PYTHONPATH=packages:packages/collector \
-  python3 -m pytest packages/collector/tests/test_dedup.py \
-                     packages/collector/tests/test_semantic_search.py -v
-
-# SDK tests
-PYTHONPATH=packages/sdk python3 -m pytest packages/sdk/tests/ -v
-
-# Integration tests — requires PostgreSQL
-PYTHONPATH=packages:packages/collector python3 -m pytest tests/ -v
-```
-
----
-
-## Key Features
-
-- **Multi-source discovery** — SDK instrumentation, gateway proxy, browser extensions, and macOS app all feed a single registry.
-- **Asset deduplication** — fingerprints AI assets across sources and assigns confidence scores (`low / medium / high / verified`).
-- **Semantic search** — pgvector HNSW index over asset metadata for natural-language registry queries.
-- **Fail-open telemetry** — collector failures never propagate to LLM calls.
-- **Multi-tenant isolation** — tenant-scoped API keys throughout.
-- **200+ LLM providers** — gateway inherits full Portkey provider support.
-- **Ardoq AI Lens ready** — Integration Builder recipe included; ServiceNow and custom REST connectors planned.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| SDK | Python 3.11+, openai, httpx |
-| Collector | FastAPI, SQLAlchemy (async), Pydantic v2, Alembic |
-| Database | PostgreSQL 15, pgvector (HNSW) |
-| Gateway | TypeScript, Node.js (forked Portkey) |
-| Infrastructure | Docker Compose |
-| Testing | pytest, pytest-asyncio, httpx, respx |
-
----
-
-## Contributing
-
-Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the
-development workflow and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community
-expectations.
-
-## Security
-
-Report vulnerabilities privately — see [SECURITY.md](SECURITY.md). Please do not
-open a public issue for a security problem.
-
-## License
-
-Prompt Shields SDK, gateway extensions, collector, and connectors are licensed
-under the **Apache License 2.0** — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
-
-The `gateway/` directory is a fork of the
-[Portkey AI Gateway](https://github.com/Portkey-AI/gateway), which is licensed
-under the **MIT License**. That license continues to govern the upstream code and
-is retained at [`gateway/LICENSE`](gateway/LICENSE); the modifications made for
-Prompt Shields are described in [`gateway/FORK_NOTICE.md`](gateway/FORK_NOTICE.md).
-MIT is compatible with Apache-2.0, so the combined work may be distributed under
-these terms provided both notices are preserved.
+The `gateway/` directory is a fork of the [Portkey AI Gateway](https://github.com/Portkey-AI/gateway), licensed under the MIT Licence. That licence continues to govern the upstream code and is retained at [`gateway/LICENSE`](gateway/LICENSE); modifications are described in [`gateway/FORK_NOTICE.md`](gateway/FORK_NOTICE.md). MIT is compatible with Apache 2.0, so the combined work may be distributed under these terms provided both notices are preserved.
