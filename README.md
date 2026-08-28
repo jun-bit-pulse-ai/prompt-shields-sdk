@@ -22,6 +22,13 @@ PYTHONPATH=packages:packages/collector python3 demo/seed_data.py && python3 demo
 
 The demo ingests an event, then reads the resulting asset back out of the registry. The registry is then browsable at `http://localhost:8000/api/v1/registry/assets` with the header `Authorization: Bearer ps-demo-key-acme`.
 
+If you already run PostgreSQL on port 5432, the container will not receive the connection and you will see `role "ps_user" does not exist`. Publish the database on another port instead, and point the tooling at it:
+
+```bash
+export PS_DB_PORT=5433
+export PS_DATABASE_URL="postgresql+asyncpg://ps_user:ps_local_dev@localhost:5433/prompt_shields"
+```
+
 Seeding is one-shot. It creates a demo tenant each time it runs, so re-run it only against a fresh database.
 
 ## How does it work?
