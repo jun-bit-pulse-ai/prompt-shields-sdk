@@ -13,7 +13,7 @@ Most organisations cannot answer a basic governance question: which business pro
 Requires Docker and Python 3.11 or newer. Runs entirely on your machine; no Prompt Shields account and no LLM API key are needed.
 
 ```bash
-git clone https://github.com/Bit-Pulse-AI/prompt-shields-sdk.git && cd prompt-shields-sdk
+git clone https://github.com/Prompt-Shields/prompt-shields-sdk.git && cd prompt-shields-sdk
 docker compose up -d
 pip install -e "packages/sdk[all]" -e "packages/collector[dev]"
 until docker compose exec -T db pg_isready -q; do sleep 1; done && (cd packages/db && PYTHONPATH=../../packages alembic upgrade head)
